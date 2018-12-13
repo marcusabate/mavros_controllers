@@ -32,7 +32,7 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle& nh, const ros::NodeHandle& n
   nh_.param<int>("/geometric_controller/ctrl_mode", ctrl_mode_, MODE_BODYRATE);
   nh_.param<bool>("/geometric_controller/enable_sim", sim_enable_, true);
   nh_.param<bool>("/geometric_controller/enable_gazebo_state", use_gzstates_, false);
-  nh_.param<bool>("/geometric_controller/yaw_velocity", velocity_yaw_, false);
+  nh_.param<bool>("/geometric_controller/yaw_velocity", velocity_yaw_, true);
   nh_.param<double>("/geometric_controller/max_acc", max_fb_acc_, 7.0);
   nh_.param<double>("/geometric_controller/yaw_heading", mavYaw_, 0.0);
   nh_.param<double>("/geometric_controller/drag_dx", dx_, 0.0);
@@ -272,10 +272,6 @@ void geometricCtrl::computeBodyRateCmd(bool ctrl_mode){
     a_dob = disturbanceobserver(errorPos_, a_ref + a_fb - a_dob);
     a_des = a_ref + a_fb - a_dob - g_;
     q_des = acc2quaternion(a_des, mavYaw_);
-  if(velocity_yaw_){
-    groundvel << mavVel_(0), mavVel_(1), 0.0;
-    mavYaw_ = -1.0* std::atan2(mavVel_(1), mavVel_(0));
-  }
 
   } else {
     /// Compute BodyRate commands using differential flatness
@@ -286,6 +282,9 @@ void geometricCtrl::computeBodyRateCmd(bool ctrl_mode){
     if(a_fb.norm() > max_fb_acc_) a_fb = (max_fb_acc_ / a_fb.norm()) * a_fb; //Clip acceleration if reference is too large
     a_rd = R_ref * D_.asDiagonal() * R_ref.transpose() * targetVel_; //Rotor drag
     a_des = a_fb + a_ref - a_rd - g_;
+    if(velocity_yaw_){
+      mavYaw_ = -1.0* std::atan2(groundvel(1), groundvel(0));
+    }
     q_des = acc2quaternion(a_des, mavYaw_);
   }
 
@@ -381,16 +380,39 @@ Eigen::Vector4d geometricCtrl::acc2quaternion(Eigen::Vector3d vector_acc, Eigen:
 
 Eigen::Vector4d geometricCtrl::attcontroller(Eigen::Vector4d &ref_att, Eigen::Vector3d &ref_acc, Eigen::Vector4d &curr_att){
   Eigen::Vector4d ratecmd;
-  Eigen::Vector4d qe, q_inv, inverse;
-  Eigen::Matrix3d rotmat;
-  Eigen::Vector3d zb;
+  Eigen::Vector4d qe, q_inv, inverse, qe_red, qe_red_inv, q_mix;
+  Eigen::Matrix3d rotmat, ref_rotmat;
+  Eigen::Vector3d zb, ebz, ecmdz, k_vec;
+  double alpha, alpha_mix, yaw_p;
+  yaw_p = 0.3;
+
+  rotmat = quat2RotMatrix(mavAtt_); //Current Orientation Rotation Matrix
+  ref_rotmat = quat2RotMatrix(ref_att); //Command Orientation Rotation Matrix
+  // Full attitude controller
   inverse << 1.0, -1.0, -1.0, -1.0;
   q_inv = inverse.asDiagonal() * curr_att;
   qe = quatMultiplication(q_inv, ref_att);
+
+  // Reduced attitude controller
+  ebz = rotmat.col(2);
+  ecmdz = ref_rotmat.col(2);
+  alpha = std::acos(ebz.dot(ecmdz));
+  k_vec = ebz.cross(ecmdz);
+  k_vec = k_vec.normalized();
+
+  qe_red << cos(alpha), std::sin(alpha) * k_vec(0), std::sin(alpha) * k_vec(1), std::sin(alpha) * k_vec(2); // Reduced error quaternion
+  qe_red_inv = inverse.asDiagonal() * qe_red;
+
+  q_mix = quatMultiplication(qe_red_inv, qe);
+  alpha_mix = std::acos(2*q_mix(0));
+  q_mix << std::cos(.5 * alpha_mix * yaw_p), 0, 0, std::sin(.5 * alpha_mix * yaw_p);
+
+  qe = quatMultiplication(qe_red, q_mix); //Update error quaternion to mixed reduced quaternion
+
+  // Mixing reduced and full attitude controller
   ratecmd(0) = (2.0 / attctrl_tau_) * std::copysign(1.0, qe(0)) * qe(1);
   ratecmd(1) = (2.0 / attctrl_tau_) * std::copysign(1.0, qe(0)) * qe(2);
   ratecmd(2) = (2.0 / attctrl_tau_) * std::copysign(1.0, qe(0)) * qe(3);
-  rotmat = quat2RotMatrix(mavAtt_);
   zb = rotmat.col(2);
   ratecmd(3) = std::max(0.0, std::min(1.0, norm_thrust_const_ * ref_acc.dot(zb))); //Calculate thrust
   return ratecmd;
