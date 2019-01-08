@@ -33,6 +33,7 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle& nh, const ros::NodeHandle& n
   nh_.param<bool>("/geometric_controller/enable_sim", sim_enable_, true);
   nh_.param<bool>("/geometric_controller/enable_gazebo_state", use_gzstates_, false);
   nh_.param<bool>("/geometric_controller/yaw_velocity", velocity_yaw_, true);
+  nh_.param<double>("/geometric_controller/yaw_gain", yaw_p, 0.3);
   nh_.param<double>("/geometric_controller/max_acc", max_fb_acc_, 7.0);
   nh_.param<double>("/geometric_controller/yaw_heading", mavYaw_, 0.0);
   nh_.param<double>("/geometric_controller/drag_dx", dx_, 0.0);
@@ -383,8 +384,7 @@ Eigen::Vector4d geometricCtrl::attcontroller(Eigen::Vector4d &ref_att, Eigen::Ve
   Eigen::Vector4d qe, q_inv, inverse, qe_red, qe_red_inv, q_mix;
   Eigen::Matrix3d rotmat, ref_rotmat;
   Eigen::Vector3d zb, ebz, ecmdz, k_vec;
-  double alpha, alpha_mix, yaw_p;
-  yaw_p = 0.3;
+  double alpha, alpha_mix;
 
   rotmat = quat2RotMatrix(mavAtt_); //Current Orientation Rotation Matrix
   ref_rotmat = quat2RotMatrix(ref_att); //Command Orientation Rotation Matrix

@@ -57,7 +57,7 @@ class geometricCtrl
     int ctrl_mode_;
     bool landing_commanded_;
     bool use_gzstates_, sim_enable_, use_dob_;
-    double kp_rot_, kd_rot_;
+    double kp_rot_, kd_rot_, yaw_p;
     double reference_request_dt_;
     double attctrl_tau_;
     double norm_thrust_const_;
