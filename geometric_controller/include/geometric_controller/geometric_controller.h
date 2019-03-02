@@ -28,10 +28,6 @@
 #include <std_srvs/SetBool.h>
 #include <gazebo_msgs/ModelStates.h>
 
-#define MODE_ROTORTHRUST  1
-#define MODE_BODYRATE     2
-#define MODE_BODYTORQUE   3
-
 using namespace std;
 using namespace Eigen;
 class geometricCtrl
@@ -54,7 +50,6 @@ class geometricCtrl
 
     string mav_name_;
     bool fail_detec_, ctrl_enable_, feedthrough_enable_;
-    int ctrl_mode_;
     bool landing_commanded_;
     bool use_gzstates_, sim_enable_, use_dob_;
     double kp_rot_, kd_rot_;
@@ -75,13 +70,22 @@ class geometricCtrl
     double mavYaw_;
     Eigen::Vector3d a_des, a_fb, a_ref, a_rd, a_dob, g_;
     Eigen::Vector4d mavAtt_, q_ref, q_des;
-    Eigen::Vector4d cmdBodyRate_; //{wx, wy, wz, Thrust}
+    Eigen::Vector4d cmdBodyRate_, feedthroughBodyRate_; //{wx, wy, wz, Thrust}
     Eigen::Vector3d Kpos_, Kvel_, D_;
     std::vector<Eigen::Vector2d> q_, p_;
     Eigen::Vector3d a0, a1, tau;
     double a0_x, a0_y, a0_z, a1_x, a1_y, a1_z, tau_x, tau_y, tau_z;
     double dhat_max, dhat_min;
     double Kpos_x_, Kpos_y_, Kpos_z_, Kvel_x_, Kvel_y_, Kvel_z_;
+
+    enum ControllerStatus {
+      IDLE, CONTROL
+    } ctrl_status_;
+
+    enum ControllerMode {
+      FEEDTHROUGH_CONTROL, GEOMETRIC_CONTROL, DOB_CONTROL
+    } ctrl_mode_;
+
 
     void pubMotorCommands();
     void pubRateCommands();
@@ -104,7 +108,7 @@ class geometricCtrl
 
   public:
     geometricCtrl(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private);
-    void computeBodyRateCmd(bool ctrl_mode);
+    void computeBodyRateCmd();
     Eigen::Vector3d disturbanceobserver(Eigen::Vector3d pos_error, Eigen::Vector3d acc_setpoint);
     Eigen::Vector4d quatMultiplication(Eigen::Vector4d &q, Eigen::Vector4d &p);
     Eigen::Vector4d attcontroller(Eigen::Vector4d &ref_att, Eigen::Vector3d &ref_acc, Eigen::Vector4d &curr_att);

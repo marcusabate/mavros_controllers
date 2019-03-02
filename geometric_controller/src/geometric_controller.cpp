@@ -11,7 +11,9 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle& nh, const ros::NodeHandle& n
   fail_detec_(false),
   ctrl_enable_(true),
   landing_commanded_(false),
-  feedthrough_enable_(false) {
+  feedthrough_enable_(false),
+  ctrl_status_(IDLE),
+  ctrl_mode_(GEOMETRIC_CONTROL) {
 
   referenceSub_=nh_.subscribe("reference/setpoint",1, &geometricCtrl::targetCallback,this,ros::TransportHints().tcpNoDelay());
   flatreferenceSub_ = nh_.subscribe("reference/flatsetpoint", 1, &geometricCtrl::flattargetCallback, this, ros::TransportHints().tcpNoDelay());
@@ -30,9 +32,8 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle& nh, const ros::NodeHandle& n
   set_mode_client_ = nh_.serviceClient<mavros_msgs::SetMode>("/mavros/set_mode");
 
   nh_.param<string>("/geometric_controller/mavname", mav_name_, "iris");
-  nh_.param<int>("/geometric_controller/ctrl_mode", ctrl_mode_, MODE_BODYRATE);
+  // nh_.param<ControllerMode>("/geometric_controller/ctrl_mode", ctrl_mode_, GEOMETRIC_CONTROL);
   nh_.param<bool>("/geometric_controller/enable_sim", sim_enable_, true);
-  nh_.param<bool>("/geometric_controller/enable_gazebo_state", use_gzstates_, false);
   nh_.param<double>("/geometric_controller/max_acc", max_fb_acc_, 7.0);
   nh_.param<double>("/geometric_controller/yaw_heading", mavYaw_, 0.0);
   nh_.param<double>("/geometric_controller/drag_dx", dx_, 0.0);
@@ -46,7 +47,6 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle& nh, const ros::NodeHandle& n
   nh_.param<double>("/geometric_controller/Kv_x", Kvel_x_, 3.7);
   nh_.param<double>("/geometric_controller/Kv_y", Kvel_y_, 3.7);
   nh_.param<double>("/geometric_controller/Kv_z", Kvel_z_, 10.0);
-  nh_.param<bool>("/geometric_controller/enable_dob", use_dob_, false);
   nh_.param<double>("/geometric_controller/dob/a0_x", a0_x, 10.0);
   nh_.param<double>("/geometric_controller/dob/a0_y", a0_y, 10.0);
   nh_.param<double>("/geometric_controller/dob/a0_z", a0_z, 10.0);
@@ -187,37 +187,38 @@ void geometricCtrl::gzmavposeCallback(const gazebo_msgs::ModelStates& msg){
 }
 
 void geometricCtrl::cmdloopCallback(const ros::TimerEvent& event){
-  if(sim_enable_){
-    // Enable OFFBoard mode and arm automatically
-    // This is only run if the vehicle is simulated
-    arm_cmd_.request.value = true;
-    offb_set_mode_.request.custom_mode = "OFFBOARD";
-    if( current_state_.mode != "OFFBOARD" && (ros::Time::now() - last_request_ > ros::Duration(5.0))){
-      if( set_mode_client_.call(offb_set_mode_) && offb_set_mode_.response.mode_sent){
-        ROS_INFO("Offboard enabled");
-      }
-      last_request_ = ros::Time::now();
-    } else {
-      if( !current_state_.armed && (ros::Time::now() - last_request_ > ros::Duration(5.0))){
-        if( arming_client_.call(arm_cmd_) && arm_cmd_.response.success){
-          ROS_INFO("Vehicle armed");
+
+  switch(ctrl_status_){
+    case CONTROL :
+      computeBodyRateCmd();
+      break;
+
+    case IDLE :
+      if(sim_enable_){
+        // Enable OFFBoard mode and arm automatically
+        // This is only run if the vehicle is simulated
+        arm_cmd_.request.value = true;
+        offb_set_mode_.request.custom_mode = "OFFBOARD";
+        if( current_state_.mode != "OFFBOARD" && (ros::Time::now() - last_request_ > ros::Duration(5.0))){
+          if( set_mode_client_.call(offb_set_mode_) && offb_set_mode_.response.mode_sent){
+            ROS_INFO("Offboard enabled");
+          }
+          last_request_ = ros::Time::now();
+        } else {
+          if( !current_state_.armed && (ros::Time::now() - last_request_ > ros::Duration(5.0))){
+            if( arming_client_.call(arm_cmd_) && arm_cmd_.response.success){
+              ROS_INFO("Vehicle armed");
+            }
+            last_request_ = ros::Time::now();
+          }
         }
-        last_request_ = ros::Time::now();
       }
-    }
+      break;
   }
 
-  //TODO: Enable Failsaif sutdown
-  if(ctrl_mode_ == MODE_ROTORTHRUST){
-    //TODO: Compute Thrust commands
-  } else if(ctrl_mode_ == MODE_BODYRATE){
-      if(!feedthrough_enable_) computeBodyRateCmd(false);
-      pubReferencePose();
-      pubRateCommands();
-  } else if(ctrl_mode_ == MODE_BODYTORQUE){
-    //TODO: implement actuator commands for mavros
-  }
-  ros::spinOnce();
+  pubReferencePose();
+  pubRateCommands();
+
 }
 
 void geometricCtrl::mavstateCallback(const mavros_msgs::State::ConstPtr& msg){
@@ -252,38 +253,44 @@ void geometricCtrl::pubRateCommands(){
   angularVelPub_.publish(angularVelMsg_);
 }
 
-void geometricCtrl::computeBodyRateCmd(bool ctrl_mode){
+void geometricCtrl::computeBodyRateCmd(){
   Eigen::Vector3d errorPos_, errorVel_;
   Eigen::Matrix3d R_ref;
+  Eigen::Vector4d command;
 
   errorPos_ = mavPos_ - targetPos_;
   errorVel_ = mavVel_ - targetVel_;
   a_ref = targetAcc_;
+  switch(ctrl_mode_){
+    case GEOMETRIC_CONTROL :
+      /// Compute BodyRate commands using differential flatness
+      /// Controller based on Faessler 2017
+      q_ref = acc2quaternion(a_ref - g_, mavYaw_);
+      R_ref = quat2RotMatrix(q_ref);
+      a_fb = Kpos_.asDiagonal() * errorPos_ + Kvel_.asDiagonal() * errorVel_; //feedforward term for trajectory error
+      if(a_fb.norm() > max_fb_acc_) a_fb = (max_fb_acc_ / a_fb.norm()) * a_fb; //Clip acceleration if reference is too large
+      a_rd = R_ref * D_.asDiagonal() * R_ref.transpose() * targetVel_; //Rotor drag
+      a_des = a_fb + a_ref - a_rd - g_;
+      q_des = acc2quaternion(a_des, mavYaw_);
+      cmdBodyRate_ = attcontroller(q_des, a_des, mavAtt_); //Calculate BodyRate
+      break;
 
-  if(use_dob_){
-    /// Compute BodyRate commands using disturbance observer
-    /// From Hyuntae Kim
-    /// Compute BodyRate commands using differential flatness
-    /// Controller based on Faessler 2017
-    q_ref = acc2quaternion(a_ref - g_, mavYaw_);
-    a_fb = Kpos_.asDiagonal() * errorPos_ + Kvel_.asDiagonal() * errorVel_; //feedforward term for trajectory error
-    a_dob = disturbanceobserver(errorPos_, a_ref + a_fb - a_dob);
-    a_des = a_ref + a_fb - a_dob - g_;
-    q_des = acc2quaternion(a_des, mavYaw_);
+    case DOB_CONTROL :
+      /// Compute BodyRate commands using disturbance observer
+      /// From Hyuntae Kim
+      q_ref = acc2quaternion(a_ref - g_, mavYaw_);
+      a_fb = Kpos_.asDiagonal() * errorPos_ + Kvel_.asDiagonal() * errorVel_; //feedforward term for trajectory error
+      a_dob = disturbanceobserver(errorPos_, a_ref + a_fb - a_dob);
+      a_des = a_ref + a_fb - a_dob - g_;
+      q_des = acc2quaternion(a_des, mavYaw_);
+      break;
+    
+    case FEEDTHROUGH_CONTROL :
+      cmdBodyRate_ = feedthroughBodyRate_;
+      break;
 
-  } else {
-    /// Compute BodyRate commands using differential flatness
-    /// Controller based on Faessler 2017
-    q_ref = acc2quaternion(a_ref - g_, mavYaw_);
-    R_ref = quat2RotMatrix(q_ref);
-    a_fb = Kpos_.asDiagonal() * errorPos_ + Kvel_.asDiagonal() * errorVel_; //feedforward term for trajectory error
-    if(a_fb.norm() > max_fb_acc_) a_fb = (max_fb_acc_ / a_fb.norm()) * a_fb; //Clip acceleration if reference is too large
-    a_rd = R_ref * D_.asDiagonal() * R_ref.transpose() * targetVel_; //Rotor drag
-    a_des = a_fb + a_ref - a_rd - g_;
-    q_des = acc2quaternion(a_des, mavYaw_);
   }
 
-  cmdBodyRate_ = attcontroller(q_des, a_des, mavAtt_); //Calculate BodyRate
 }
 
 Eigen::Vector4d geometricCtrl::quatMultiplication(Eigen::Vector4d &q, Eigen::Vector4d &p) {
@@ -386,7 +393,7 @@ bool geometricCtrl::ctrltriggerCallback(std_srvs::SetBool::Request &req,
                                           std_srvs::SetBool::Response &res){
   unsigned char mode = req.data;
 
-  ctrl_mode_ = mode;
+  // ctrl_mode_ = mode;
   res.success = ctrl_mode_;
   res.message = "controller triggered";
 }
@@ -415,11 +422,14 @@ Eigen::Vector3d geometricCtrl::disturbanceobserver(Eigen::Vector3d pos_error, Ei
 }
 
 void geometricCtrl::setBodyRateCommand(Eigen::Vector4d bodyrate_command){
-  cmdBodyRate_= bodyrate_command;
+  feedthroughBodyRate_ = bodyrate_command;
   
 }
 
 void geometricCtrl::setFeedthrough(bool feed_through){
-  feedthrough_enable_ = feed_through;
-
+  if(feed_through){
+    ctrl_mode_ = FEEDTHROUGH_CONTROL;
+  } else {
+    ctrl_mode_ = GEOMETRIC_CONTROL;
+  }
 }
