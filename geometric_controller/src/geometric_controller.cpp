@@ -139,26 +139,24 @@ void geometricCtrl::flattargetCallback(const controller_msgs::FlatTarget& msg) {
 }
 
 void geometricCtrl::mavposeCallback(const geometry_msgs::PoseStamped& msg){
-  if(!use_gzstates_){
-    mavPos_(0) = msg.pose.position.x;
-    mavPos_(1) = msg.pose.position.y;
-    mavPos_(2) = msg.pose.position.z;
-    mavAtt_(0) = msg.pose.orientation.w;
-    mavAtt_(1) = msg.pose.orientation.x;
-    mavAtt_(2) = msg.pose.orientation.y;
-    mavAtt_(3) = msg.pose.orientation.z;
-  }
+  mavPos_(0) = msg.pose.position.x;
+  mavPos_(1) = msg.pose.position.y;
+  mavPos_(2) = msg.pose.position.z;
+  mavAtt_(0) = msg.pose.orientation.w;
+  mavAtt_(1) = msg.pose.orientation.x;
+  mavAtt_(2) = msg.pose.orientation.y;
+  mavAtt_(3) = msg.pose.orientation.z;
 }
 
 void geometricCtrl::mavtwistCallback(const geometry_msgs::TwistStamped& msg){
-  if(!use_gzstates_) {
-    mavVel_(0) = msg.twist.linear.x;
-    mavVel_(1) = msg.twist.linear.y;
-    mavVel_(2) = msg.twist.linear.z;
-    mavRate_(0) = msg.twist.angular.x;
-    mavRate_(1) = msg.twist.angular.y;
-    mavRate_(2) = msg.twist.angular.z;
-  }
+  
+  mavVel_(0) = msg.twist.linear.x;
+  mavVel_(1) = msg.twist.linear.y;
+  mavVel_(2) = msg.twist.linear.z;
+  mavRate_(0) = msg.twist.angular.x;
+  mavRate_(1) = msg.twist.angular.y;
+  mavRate_(2) = msg.twist.angular.z;
+  
 }
 
 void geometricCtrl::cmdloopCallback(const ros::TimerEvent& event){
